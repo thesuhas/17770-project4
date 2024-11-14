@@ -6,3 +6,4 @@ edition = "2021"
 [dependencies]
 clap = { version = "4.5.21", features = ["derive"] }
 orca-wasm = "0.2.0"
+wasmparser = "0.219.1"
