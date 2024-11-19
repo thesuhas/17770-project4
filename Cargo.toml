@@ -5,5 +5,6 @@ edition = "2021"
 
 [dependencies]
 clap = { version = "4.5.21", features = ["derive"] }
-orca-wasm = "0.2.0"
+orca-wasm = { git = "https://github.com/thesuhas/orca", branch = "additional_gc_support" }
 wasmparser = "0.219.1"
+wat = "1.220.0"

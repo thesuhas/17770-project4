@@ -14,5 +14,5 @@ struct Args {
 
 fn main() {
     let args = Args::parse();
-    println!("Input File: {:?}, Output File: {:?}", args.input_file_path, args.output_file_path);
+    
 }
