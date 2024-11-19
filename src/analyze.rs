@@ -22,17 +22,19 @@ type ContIndex = usize;
 type JumpIndex = usize;
 
 // TODO: worth tracking exits?
+// Nodes of the graph
 pub struct Continuation {
-    pub pc: usize,
+    pub pc: usize, // Exit instruction of the block. Start of loop or end of Block/Func
     // bc structured control flow, we know all inflows will be resolved 
     // before current has to be, except for Loop, for which we need a fixpoint
-    pub inflows: Vec<JumpIndex>,
-    pub tipe: ContType,
+    pub inflows: Vec<JumpIndex>, // Edges that lead into the block
+    pub ty: ContType,
 }
 
+// Edges in the CFG
 pub struct Jump<T> {
-    pub pc: usize,
-    pub target: ContIndex,
+    pub pc: usize, // Source instruction that the edge starts from
+    pub target: ContIndex, // Continuation Block that this Edge targets
     pub is_conditional: bool,
     pub state: T,
 }
@@ -48,7 +50,7 @@ impl<'a, T: Default> Analysis<'a, T> {
         let mut conts = vec![Continuation{
             pc: func.body.instructions.len(),
             inflows: vec![],
-            tipe: ContType::Func,
+            ty: ContType::Func,
         }];
 
         let mut jumps = vec![];
