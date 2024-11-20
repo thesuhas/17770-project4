@@ -20,6 +20,8 @@ pub trait State: Clone {
     fn exec_op<'a>(&mut self, op: Operator<'a>);
     fn from_func(module: &Module, local_func: &LocalFunction) -> Self;
     fn merge(&mut self, other: &Self); // TODO: idk if it should always just be two at a time
+    fn clone_for_next_cont(&self) -> Self;
+    fn clone_for_jmp(&self) -> Self;
 }
 
 // TODO: worth tracking exits?
@@ -165,7 +167,9 @@ impl<T: State> Analysis<T> {
             pc_jumps,
         }
     }
+}
 
+impl<T: State + std::fmt::Debug> Analysis<T> {
     pub fn run(&mut self, module: &Module) {
         // run each instruction tracking data, merge when there
         // are multiple inflows, find fixpoint for loops
@@ -174,31 +178,45 @@ impl<T: State> Analysis<T> {
         let code = &local_func.body.instructions;
         let nconts = self.continuations.len();
 
-        // we start loop with continuations.len() so we can use the FuncStart continuation
-        for ci in 0..nconts {
+        // we have to iterate in order of cont start, but they were pushed
+        // in order of control nesting
+        // skip the 1st el in sort because that's the fn cont which is overloaded
+        let mut cont_idxs: Vec<usize> = (0..nconts).collect();
+        cont_idxs[1..].sort_by_key(|i| self.continuations[*i].pc);
+        let last_cont_idx = *cont_idxs.last().unwrap();
+
+        for ci in cont_idxs {
             let cont = &mut self.continuations[ci];
-            let mut pc = if cont.ty == ContType::Func { 0 } else { cont.pc };
+            let start_pc = if cont.ty == ContType::Func { 0 } else { cont.pc };
             if cont.ty == ContType::Func {
                 cont.entry_state = Some(T::from_func(module, local_func));
             }
-            let mut state = {
+            let state = {
                 debug_assert!(cont.entry_state.is_some(), "reached cont before entry state was set");
                 cont.merge_states(&self.jumps);
-                cont.entry_state.as_ref().cloned().unwrap()
+                cont.entry_state.as_mut().unwrap()
             };
 
-            while pc < cont.fallthru_pc.unwrap_or(code.len()) {
+            for pc in start_pc..cont.fallthru_pc.unwrap_or(code.len()) {
                 let current_op = code[pc].extract_op();
 
-                match current_op {
-                    Operator::Loop { .. } | Operator::End => {
-                        let next_cont_idx = self.pc_conts[pc].expect("all loop and end should have a cont");
-                        self.continuations[next_cont_idx].entry_state = Some(state.clone());
-                        break;
+                if let Some(jmp_idx) = self.pc_jumps[pc] {
+                    let jmp = &mut self.jumps[jmp_idx];
+                    let new = state.clone_for_jmp();
+                    match jmp.state.as_mut() {
+                        Some(old) => old.merge(&new),
+                        None => { jmp.state = Some(new); }
                     }
-                    op => state.exec_op(op),
                 }
-                pc += 1;
+
+                state.exec_op(current_op);
+            }
+
+            if let Some(end_pc) = cont.fallthru_pc {
+                let next_cont_idx = self.pc_conts[end_pc].expect("expected cont");
+                self.continuations[next_cont_idx].entry_state = Some(state.clone_for_next_cont());
+            } else {
+                assert!(ci == last_cont_idx);
             }
         }
     }
@@ -273,6 +291,7 @@ impl MergeVal for AbstractSlot {
 }
 
 impl State for AnalysisData {
+    // TODO: just pass in Analysis for new
     fn from_func(module: &Module, local_func: &LocalFunction) -> Self {
         // the stack and globals may contain references from other functions,
         // which we don't have to track since those are already escaped anyway
@@ -294,38 +313,70 @@ impl State for AnalysisData {
         MergeVal::merge_into_slice(&mut self.abstract_globals, &other.abstract_globals);
     }
 
+    // TODO: pass in Analysis, cont idx
+    fn clone_for_next_cont(&self) -> Self {
+        let mut new = self.clone();
+        new.instr_annotations.clear();
+        new
+    }
+
+    fn clone_for_jmp(&self) -> Self {
+        self.clone_for_next_cont()
+    }
+
     fn exec_op<'a>(&mut self, op: Operator<'a>) {
         use Operator::*;
 
+        let mut annotation = Annotation { alloc_id: None };
         match op {
             I32Const { .. } => { // TODO: all ops that incr stack length
                 self.abstract_stack.push(AbstractSlot::empty());
             }
-            I32Add => { // TODO: all ops that decr stack length
-                self.abstract_stack.pop();
+            I32Add | Drop => { // TODO: all ops that decr stack length
+                let entry = self.abstract_stack.pop().unwrap();
+                self.update_rc(&entry, |rc| *rc -= 1);
             }
             StructNew { .. } | StructNewDefault { .. } => {
+                dbg!();
                 let obj_idx = self.ref_counts.objects.len();
-                self.ref_counts.objects.push(Object { refcount: 0 });
+                self.ref_counts.objects.push(Object { refcount: 1 });
                 self.abstract_stack.push(AbstractSlot::new_ref(obj_idx));
+                annotation.alloc_id = Some(obj_idx);
             }
             LocalGet { local_index } => {
                 let entry = self.abstract_locals[local_index as usize].clone();
+                self.update_rc(&entry, |rc| *rc += 1);
                 self.abstract_stack.push(entry);
             }
             LocalSet { local_index } => {
+                // refcount doesnt change bc it's just moved
                 let entry = self.abstract_stack.pop().unwrap().clone();
-                self.abstract_locals[local_index as usize] = entry;
+
+                let old_entry = std::mem::replace(&mut self.abstract_locals[local_index as usize], entry);
+                self.update_rc(&old_entry, |rc| *rc -= 1);
             }
             GlobalGet { global_index } => {
                 let entry = self.abstract_globals[global_index as usize].clone();
+                self.update_rc(&entry, |rc| *rc += 1);
                 self.abstract_stack.push(entry);
             }
             GlobalSet { global_index } => {
                 let entry = self.abstract_stack.pop().unwrap().clone();
-                self.abstract_globals[global_index as usize] = entry;
+
+                let old_entry = std::mem::replace(&mut self.abstract_globals[global_index as usize], entry);
+                self.update_rc(&old_entry, |rc| *rc -= 1);
             }
             _ => {},
         }
+        self.instr_annotations.push(annotation);
+    }
+}
+
+impl AnalysisData {
+    pub fn update_rc<'a>(&'a mut self, entry: &AbstractSlot, mut f: impl FnMut(&mut usize)) {
+        entry.reference
+             .map(|obj| &mut self.ref_counts.objects[obj].refcount)
+             .iter_mut()
+             .for_each(|rc| f(rc))
     }
 }

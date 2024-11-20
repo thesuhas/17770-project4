@@ -22,11 +22,21 @@ fn main() {
 }
 
 #[test]
-fn test_working() {
+fn test_cfg() {
     let path = "test/cfg_test.wat".to_string();
     let wasm = wat::parse_file(path).expect("unable to convert");
     let module = Module::parse(&wasm, false).expect("Error parsing");
     let mut analyzer: TotalAnalyzer<AnalysisData> = analyze::TotalAnalyzer::init_analysis(module);
     analyzer.analyses[0].run(&analyzer.module);
-    dbg!();
+    dbg!(&analyzer.analyses[0].continuations);
+}
+
+#[test]
+fn test_global_escape() {
+    let path = "test/global_escape.wat".to_string();
+    let wasm = wat::parse_file(path).expect("unable to convert");
+    let module = Module::parse(&wasm, false).expect("Error parsing");
+    let mut analyzer: TotalAnalyzer<AnalysisData> = analyze::TotalAnalyzer::init_analysis(module);
+    analyzer.analyses[0].run(&analyzer.module);
+    dbg!(&analyzer.analyses[0].continuations);
 }
