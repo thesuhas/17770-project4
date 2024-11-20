@@ -1,5 +1,7 @@
 pub mod analyze;
+use analyze::{AnalysisData, TotalAnalyzer};
 use clap::Parser;
+use orca_wasm::Module;
 
 #[derive(Parser, Debug)]
 #[command(version, about, long_about = None)]
@@ -14,5 +16,17 @@ struct Args {
 
 fn main() {
     let args = Args::parse();
-    
+    let wasm = wat::parse_file(args.input_file_path).expect("unable to convert");
+    let module = Module::parse(&wasm, false).expect("Error parsing");
+    let analyze: TotalAnalyzer<AnalysisData> = analyze::TotalAnalyzer::init_analysis(module);
+}
+
+#[test]
+fn test_working() {
+    let path = "test/cfg_test.wat".to_string();
+    let wasm = wat::parse_file(path).expect("unable to convert");
+    let module = Module::parse(&wasm, false).expect("Error parsing");
+    let mut analyzer: TotalAnalyzer<AnalysisData> = analyze::TotalAnalyzer::init_analysis(module);
+    analyzer.analyses[0].run(&analyzer.module);
+    dbg!();
 }
