@@ -1,4 +1,6 @@
 pub mod analyze;
+pub mod rewrite;
+
 use analyze::{AnalysisData, TotalAnalyzer};
 use clap::Parser;
 use orca_wasm::Module;

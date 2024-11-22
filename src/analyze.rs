@@ -197,6 +197,7 @@ impl<T: State + std::fmt::Debug> Analysis<T> {
                 cont.entry_state.as_mut().unwrap()
             };
 
+            // TODO: if cont is loop, find a fixed point
             for pc in start_pc..cont.fallthru_pc.unwrap_or(code.len()) {
                 let current_op = code[pc].extract_op();
 
@@ -365,6 +366,12 @@ impl State for AnalysisData {
 
                 let old_entry = std::mem::replace(&mut self.abstract_globals[global_index as usize], entry);
                 self.update_rc(&old_entry, |rc| *rc -= 1);
+            }
+            Return | End => { // TODO: ensure that End is actually the same as return
+                for i in 0..self.abstract_locals.len() {
+                    let entry = std::mem::take(&mut self.abstract_locals[i]);
+                    self.update_rc(&entry, |rc| *rc -= 1);
+                }
             }
             _ => {},
         }
