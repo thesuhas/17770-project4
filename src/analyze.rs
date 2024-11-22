@@ -1,9 +1,9 @@
 #![allow(dead_code)]
 
+use orca_wasm::ir::id::FunctionID;
 use orca_wasm::ir::module::module_functions::LocalFunction;
 use orca_wasm::ir::module::LocalOrImport;
 use orca_wasm::Module;
-use orca_wasm::ir::id::FunctionID;
 use wasmparser::Operator;
 
 #[derive(Debug, Eq, PartialEq, Copy, Clone)]
@@ -28,7 +28,7 @@ pub trait State: Clone {
 // Nodes of the graph
 #[derive(Debug)]
 pub struct Continuation<T: State> {
-    pub pc: usize, // either end of a block/fun or, start of a loop
+    pub pc: usize,                  // either end of a block/fun or, start of a loop
     pub fallthru_pc: Option<usize>, // essentially first label following a continuation
     // bc structured control flow, we know all inflows will be resolved
     // before current has to be, except for Loop, for which we need a fixpoint
@@ -39,11 +39,16 @@ pub struct Continuation<T: State> {
 
 impl<T: State> Continuation<T> {
     pub fn merge_states(&mut self, jumps: &[Jump<T>]) {
-        let state = self.entry_state.as_mut().expect("attempted to merge cont whose entry state was not set");
+        let state = self
+            .entry_state
+            .as_mut()
+            .expect("attempted to merge cont whose entry state was not set");
         // jumps from the future will still have unresolved state,
         // but that should only happen for Loop
-        let resolved_in_states =
-            self.inflows.iter().filter_map(|jmp_idx| jumps[*jmp_idx].state.as_ref());
+        let resolved_in_states = self
+            .inflows
+            .iter()
+            .filter_map(|jmp_idx| jumps[*jmp_idx].state.as_ref());
         for jmp_state in resolved_in_states {
             state.merge(jmp_state);
         }
@@ -91,15 +96,13 @@ impl<T: State> Analysis<T> {
     pub fn init(module: &Module, func: &LocalFunction) -> Self {
         let mut pc_conts = vec![None; func.body.num_instructions];
         let mut pc_jumps = vec![None; func.body.num_instructions];
-        let mut conts = vec![
-            Continuation {
-                pc: func.body.num_instructions,
-                fallthru_pc: None,
-                inflows: vec![],
-                ty: ContType::Func,
-                entry_state: None,
-            },
-        ];
+        let mut conts = vec![Continuation {
+            pc: func.body.num_instructions,
+            fallthru_pc: None,
+            inflows: vec![],
+            ty: ContType::Func,
+            entry_state: None,
+        }];
         pc_conts[0] = Some(0);
 
         let mut jumps = vec![];
@@ -113,7 +116,7 @@ impl<T: State> Analysis<T> {
                 Block { .. } => {
                     ctl_stack.push(conts.len());
                     conts.push(Continuation {
-                        pc: 0,           // to be filled in when we find the end
+                        pc: 0, // to be filled in when we find the end
                         fallthru_pc: None,
                         inflows: vec![], // to be pushed later
                         ty: ContType::Block,
@@ -126,7 +129,7 @@ impl<T: State> Analysis<T> {
                     pc_conts[pc] = Some(conts.len());
                     ctl_stack.push(conts.len());
                     conts.push(Continuation {
-                        pc,              // continuation pc of loop is the loop start
+                        pc, // continuation pc of loop is the loop start
                         fallthru_pc: None,
                         inflows: vec![], // to be pushed later
                         ty: ContType::Loop,
@@ -187,12 +190,19 @@ impl<T: State + std::fmt::Debug> Analysis<T> {
 
         for ci in cont_idxs {
             let cont = &mut self.continuations[ci];
-            let start_pc = if cont.ty == ContType::Func { 0 } else { cont.pc };
+            let start_pc = if cont.ty == ContType::Func {
+                0
+            } else {
+                cont.pc
+            };
             if cont.ty == ContType::Func {
                 cont.entry_state = Some(T::from_func(module, local_func));
             }
             let state = {
-                debug_assert!(cont.entry_state.is_some(), "reached cont before entry state was set");
+                debug_assert!(
+                    cont.entry_state.is_some(),
+                    "reached cont before entry state was set"
+                );
                 cont.merge_states(&self.jumps);
                 cont.entry_state.as_mut().unwrap()
             };
@@ -206,7 +216,9 @@ impl<T: State + std::fmt::Debug> Analysis<T> {
                     let new = state.clone_for_jmp();
                     match jmp.state.as_mut() {
                         Some(old) => old.merge(&new),
-                        None => { jmp.state = Some(new); }
+                        None => {
+                            jmp.state = Some(new);
+                        }
                     }
                 }
 
@@ -254,7 +266,9 @@ pub struct AbstractSlot {
 
 impl AbstractSlot {
     fn new_ref(obj: usize) -> Self {
-        AbstractSlot { reference: Some(obj) }
+        AbstractSlot {
+            reference: Some(obj),
+        }
     }
 
     fn empty() -> Self {
@@ -268,9 +282,9 @@ trait MergeVal: Sized {
         l.iter().zip(r.iter()).map(|(l, r)| l.merge(r)).collect()
     }
     fn merge_into_slice(l: &mut [Self], r: &[Self]) {
-        l.iter_mut().zip(r.iter()).for_each(|(l, r)| {
-            *l = l.merge(r)
-        })
+        l.iter_mut()
+            .zip(r.iter())
+            .for_each(|(l, r)| *l = l.merge(r))
     }
 }
 
@@ -286,7 +300,7 @@ impl<T: PartialEq + Clone> MergeVal for Option<T> {
 impl MergeVal for AbstractSlot {
     fn merge(&self, rhs: &Self) -> Self {
         AbstractSlot {
-            reference: self.reference.merge(&rhs.reference)
+            reference: self.reference.merge(&rhs.reference),
         }
     }
 }
@@ -330,10 +344,12 @@ impl State for AnalysisData {
 
         let mut annotation = Annotation { alloc_id: None };
         match op {
-            I32Const { .. } => { // TODO: all ops that incr stack length
+            I32Const { .. } => {
+                // TODO: all ops that incr stack length
                 self.abstract_stack.push(AbstractSlot::empty());
             }
-            I32Add | Drop => { // TODO: all ops that decr stack length
+            I32Add | Drop => {
+                // TODO: all ops that decr stack length
                 let entry = self.abstract_stack.pop().unwrap();
                 self.update_rc(&entry, |rc| *rc -= 1);
             }
@@ -353,7 +369,8 @@ impl State for AnalysisData {
                 // refcount doesnt change bc it's just moved
                 let entry = self.abstract_stack.pop().unwrap().clone();
 
-                let old_entry = std::mem::replace(&mut self.abstract_locals[local_index as usize], entry);
+                let old_entry =
+                    std::mem::replace(&mut self.abstract_locals[local_index as usize], entry);
                 self.update_rc(&old_entry, |rc| *rc -= 1);
             }
             GlobalGet { global_index } => {
@@ -364,16 +381,18 @@ impl State for AnalysisData {
             GlobalSet { global_index } => {
                 let entry = self.abstract_stack.pop().unwrap().clone();
 
-                let old_entry = std::mem::replace(&mut self.abstract_globals[global_index as usize], entry);
+                let old_entry =
+                    std::mem::replace(&mut self.abstract_globals[global_index as usize], entry);
                 self.update_rc(&old_entry, |rc| *rc -= 1);
             }
-            Return | End => { // TODO: ensure that End is actually the same as return
+            Return | End => {
+                // TODO: ensure that End is actually the same as return
                 for i in 0..self.abstract_locals.len() {
                     let entry = std::mem::take(&mut self.abstract_locals[i]);
                     self.update_rc(&entry, |rc| *rc -= 1);
                 }
             }
-            _ => {},
+            _ => {}
         }
         self.instr_annotations.push(annotation);
     }
@@ -381,9 +400,10 @@ impl State for AnalysisData {
 
 impl AnalysisData {
     pub fn update_rc<'a>(&'a mut self, entry: &AbstractSlot, mut f: impl FnMut(&mut usize)) {
-        entry.reference
-             .map(|obj| &mut self.ref_counts.objects[obj].refcount)
-             .iter_mut()
-             .for_each(|rc| f(rc))
+        entry
+            .reference
+            .map(|obj| &mut self.ref_counts.objects[obj].refcount)
+            .iter_mut()
+            .for_each(|rc| f(rc))
     }
 }

@@ -1,6 +1,6 @@
-use orca_wasm::Module;
 use orca_wasm::ir::id::TypeID;
 use orca_wasm::ir::module::module_types::Types;
+use orca_wasm::Module;
 use wasmparser::{FuncType, Operator};
 
 use crate::analyze::{Analysis, AnalysisData, State};
