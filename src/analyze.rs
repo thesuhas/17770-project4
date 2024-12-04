@@ -125,8 +125,19 @@ impl<T: State> Analysis<T> {
                 }
                 Loop { .. } => {
                     conts[current_cont].fallthru_pc = Some(pc);
+                    // loop end continuation
+                    ctl_stack.push(conts.len());
+                    conts.push(Continuation {
+                        pc: 0, // filled on loop end
+                        fallthru_pc: None,
+                        inflows: vec![], // to be pushed later
+                        ty: ContType::Block,
+                        entry_state: None,
+                    });
                     current_cont = conts.len();
                     pc_conts[pc] = Some(conts.len());
+
+                    // loop start continuation
                     ctl_stack.push(conts.len());
                     conts.push(Continuation {
                         pc, // continuation pc of loop is the loop start
@@ -149,13 +160,24 @@ impl<T: State> Analysis<T> {
                     });
                 }
                 End => {
-                    let new_cont_idx = ctl_stack.pop().unwrap();
-                    let cont_ty = conts[new_cont_idx].ty;
-                    if cont_ty == ContType::Block {
-                        pc_conts[pc] = Some(new_cont_idx);
+                    let ended_ctl_idx = ctl_stack.pop().unwrap();
+                    let ended_cont_ty = conts[ended_ctl_idx].ty;
+
+                    if ended_cont_ty == ContType::Block {
+                        pc_conts[pc] = Some(ended_ctl_idx);
                         conts[current_cont].fallthru_pc = Some(pc);
-                        current_cont = new_cont_idx;
-                        conts[new_cont_idx].pc = pc;
+                        current_cont = ended_ctl_idx;
+                        conts[ended_ctl_idx].pc = pc;
+                    } else if ended_cont_ty == ContType::Block {
+                        let loop_end_cont_idx = ctl_stack.pop().unwrap();
+                        assert_eq!(conts[loop_end_cont_idx].ty, ContType::Block);
+                        assert_eq!(loop_end_cont_idx, ended_ctl_idx - 1);
+
+                        conts[ended_ctl_idx].fallthru_pc = Some(pc);
+
+                        pc_conts[pc] = Some(loop_end_cont_idx);
+                        conts[loop_end_cont_idx].pc = pc;
+                        current_cont = loop_end_cont_idx;
                     }
                 }
                 _ => {}
@@ -227,6 +249,7 @@ impl<T: State + std::fmt::Debug> Analysis<T> {
 
             if let Some(end_pc) = cont.fallthru_pc {
                 let next_cont_idx = self.pc_conts[end_pc].expect("expected cont");
+                // TODO: should be merged properly instead of overwriting
                 self.continuations[next_cont_idx].entry_state = Some(state.clone_for_next_cont());
             } else {
                 assert!(ci == last_cont_idx);
@@ -290,6 +313,7 @@ trait MergeVal: Sized {
 
 impl<T: PartialEq + Clone> MergeVal for Option<T> {
     fn merge(&self, rhs: &Self) -> Self {
+        // TODO: incorrect when both are Some
         let pick_one = self.as_ref().xor(rhs.as_ref()).cloned();
         // flat bc (==) where both are Some is the same as (==) where both are None
         let both_equal = (self == rhs).then(|| self.as_ref().cloned()).flatten();
@@ -306,7 +330,6 @@ impl MergeVal for AbstractSlot {
 }
 
 impl State for AnalysisData {
-    // TODO: just pass in Analysis for new
     fn from_func(module: &Module, local_func: &LocalFunction) -> Self {
         // the stack and globals may contain references from other functions,
         // which we don't have to track since those are already escaped anyway

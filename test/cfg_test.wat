@@ -19,6 +19,11 @@
                     drop ;; SL 2
                     br 0 ;;
                 end
+
+                i32.const 5
+                i32.const 10
+                i32.add
+                drop
             end
 
             i32.const 15
