@@ -238,6 +238,7 @@ impl<T: State + std::fmt::Debug> Analysis<T> {
 #[derive(Debug, Clone, Default)]
 pub struct Annotation {
     pub alloc_id: Option<usize>,
+    pub ty_id: Option<usize>,
 }
 
 #[derive(Default, Debug, Clone)]
@@ -252,6 +253,7 @@ pub struct AnalysisData {
 #[derive(Debug, Clone)]
 pub struct Object {
     pub refcount: usize,
+    pub ty_id: usize,
 }
 
 #[derive(Default, Debug, Clone)]
@@ -306,59 +308,51 @@ impl MergeVal for AbstractSlot {
 }
 
 impl State for AnalysisData {
-    // TODO: just pass in Analysis for new
-    fn from_func(module: &Module, local_func: &LocalFunction) -> Self {
-        // the stack and globals may contain references from other functions,
-        // which we don't have to track since those are already escaped anyway
-        AnalysisData {
-            abstract_stack: vec![AbstractSlot::empty(); local_func.args.len()],
-            abstract_locals: vec![AbstractSlot::empty(); local_func.body.num_locals as usize],
-            abstract_globals: vec![AbstractSlot::empty(); module.globals.len()],
-            ref_counts: RefCounts { objects: vec![] },
-            instr_annotations: vec![],
-        }
-    }
-
-    fn merge(&mut self, other: &Self) {
-        assert_eq!(self.abstract_stack.len(), other.abstract_stack.len());
-        assert_eq!(self.abstract_locals.len(), other.abstract_locals.len());
-        assert_eq!(self.abstract_globals.len(), other.abstract_globals.len());
-        MergeVal::merge_into_slice(&mut self.abstract_stack, &other.abstract_stack);
-        MergeVal::merge_into_slice(&mut self.abstract_locals, &other.abstract_locals);
-        MergeVal::merge_into_slice(&mut self.abstract_globals, &other.abstract_globals);
-    }
-
-    // TODO: pass in Analysis, cont idx
-    fn clone_for_next_cont(&self) -> Self {
-        let mut new = self.clone();
-        new.instr_annotations.clear();
-        new
-    }
-
-    fn clone_for_jmp(&self) -> Self {
-        self.clone_for_next_cont()
-    }
-
-    fn exec_op<'a>(&mut self, op: Operator<'a>) {
+    fn exec_op(&mut self, op: Operator) {
         use Operator::*;
 
-        let mut annotation = Annotation { alloc_id: None };
+        let mut annotation = Annotation {
+            alloc_id: None,
+            ty_id: None,
+        };
         match op {
-            I32Const { .. } => {
+            I32Const { .. } | F64Const { .. } | I64Const { .. } | F32Const { .. } => {
                 // TODO: all ops that incr stack length
                 self.abstract_stack.push(AbstractSlot::empty());
             }
-            I32Add | Drop => {
+            I32Add | I32Sub | I32Mul | I32DivS | I32DivU | I32RemS | I32RemU | I32Or | I32Xor
+            | I32Shl | I32ShrS | I32ShrU | I32Rotl | I32Rotr | Drop => {
                 // TODO: all ops that decr stack length
                 let entry = self.abstract_stack.pop().unwrap();
                 self.update_rc(&entry, |rc| *rc -= 1);
             }
-            StructNew { .. } | StructNewDefault { .. } => {
+            StructNew { struct_type_index } | StructNewDefault { struct_type_index } => {
                 dbg!();
                 let obj_idx = self.ref_counts.objects.len();
-                self.ref_counts.objects.push(Object { refcount: 1 });
+                self.ref_counts.objects.push(Object {
+                    refcount: 1,
+                    ty_id: struct_type_index as usize,
+                });
                 self.abstract_stack.push(AbstractSlot::new_ref(obj_idx));
                 annotation.alloc_id = Some(obj_idx);
+                annotation.ty_id = Some(struct_type_index as usize);
+            }
+            StructGet {
+                struct_type_index, ..
+            }
+            | StructGetS {
+                struct_type_index, ..
+            }
+            | StructGetU {
+                struct_type_index, ..
+            }
+            | StructSet {
+                struct_type_index, ..
+            } => {
+                // Pop the reference from the abstract stack and decrement the ref count
+                let entry = self.abstract_stack.pop().unwrap();
+                self.update_rc(&entry, |rc| *rc -= 1);
+                annotation.ty_id = Some(struct_type_index as usize);
             }
             LocalGet { local_index } => {
                 let entry = self.abstract_locals[local_index as usize].clone();
@@ -396,10 +390,43 @@ impl State for AnalysisData {
         }
         self.instr_annotations.push(annotation);
     }
+
+    // TODO: just pass in Analysis for new
+    fn from_func(module: &Module, local_func: &LocalFunction) -> Self {
+        // the stack and globals may contain references from other functions,
+        // which we don't have to track since those are already escaped anyway
+        AnalysisData {
+            abstract_stack: vec![AbstractSlot::empty(); local_func.args.len()],
+            abstract_locals: vec![AbstractSlot::empty(); local_func.body.num_locals as usize],
+            abstract_globals: vec![AbstractSlot::empty(); module.globals.len()],
+            ref_counts: RefCounts { objects: vec![] },
+            instr_annotations: vec![],
+        }
+    }
+
+    fn merge(&mut self, other: &Self) {
+        assert_eq!(self.abstract_stack.len(), other.abstract_stack.len());
+        assert_eq!(self.abstract_locals.len(), other.abstract_locals.len());
+        assert_eq!(self.abstract_globals.len(), other.abstract_globals.len());
+        MergeVal::merge_into_slice(&mut self.abstract_stack, &other.abstract_stack);
+        MergeVal::merge_into_slice(&mut self.abstract_locals, &other.abstract_locals);
+        MergeVal::merge_into_slice(&mut self.abstract_globals, &other.abstract_globals);
+    }
+
+    // TODO: pass in Analysis, cont idx
+    fn clone_for_next_cont(&self) -> Self {
+        let mut new = self.clone();
+        new.instr_annotations.clear();
+        new
+    }
+
+    fn clone_for_jmp(&self) -> Self {
+        self.clone_for_next_cont()
+    }
 }
 
 impl AnalysisData {
-    pub fn update_rc<'a>(&'a mut self, entry: &AbstractSlot, mut f: impl FnMut(&mut usize)) {
+    pub fn update_rc(&mut self, entry: &AbstractSlot, mut f: impl FnMut(&mut usize)) {
         entry
             .reference
             .map(|obj| &mut self.ref_counts.objects[obj].refcount)
