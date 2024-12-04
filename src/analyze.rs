@@ -251,7 +251,7 @@ pub struct AnalysisData {
 
 #[derive(Debug, Clone)]
 pub struct Object {
-    refcount: usize,
+    pub refcount: usize,
 }
 
 #[derive(Default, Debug, Clone)]

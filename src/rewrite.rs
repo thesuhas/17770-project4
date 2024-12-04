@@ -52,6 +52,8 @@ impl<'a> Rewriter<'a, AnalysisData> {
                         match ty {
                             Types::StructType { fields, .. } => {
                                 let alloc_id = annotation.alloc_id.unwrap();
+                                if analysis.ref_counts.objects[alloc_id].refcount > 0 { continue }
+
                                 let num_fields = fields.len() as u32;
                                 let local_offset = modifier.body.num_locals;
                                 self.struct_allocs[alloc_id] = StructAlloc { local_offset, num_fields };
@@ -62,6 +64,7 @@ impl<'a> Rewriter<'a, AnalysisData> {
                                     let local_set = Operator::LocalSet { local_index };
                                     modifier.inject_at(pc, InstrumentationMode::Alternate, local_set);
                                 }
+                                // modifier.inj
                             }
                             _ => todo!(),
                         }
