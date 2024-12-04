@@ -2,6 +2,8 @@ pub mod analyze;
 pub mod rewrite;
 
 use analyze::{AnalysisData, TotalAnalyzer};
+use rewrite::Rewriter;
+
 use clap::Parser;
 use orca_wasm::Module;
 
@@ -20,7 +22,16 @@ fn main() {
     let args = Args::parse();
     let wasm = wat::parse_file(args.input_file_path).expect("unable to convert");
     let module = Module::parse(&wasm, false).expect("Error parsing");
-    let analyze: TotalAnalyzer<AnalysisData> = analyze::TotalAnalyzer::init_analysis(module);
+    let mut analyze: TotalAnalyzer<AnalysisData> = analyze::TotalAnalyzer::init_analysis(module);
+
+    let analysis = &mut analyze.analyses[0];
+    analysis.run(&analyze.module);
+    let mut rewriter = Rewriter::new(analysis);
+    rewriter.rewrite(&mut analyze.module);
+
+    let result = analyze.module.encode();
+    let out = wasmprinter::print_bytes(result).expect(":(");
+    println!("{}", out);
 }
 
 #[test]
