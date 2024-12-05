@@ -6,6 +6,8 @@ use orca_wasm::ir::module::LocalOrImport;
 use orca_wasm::Module;
 use wasmparser::Operator;
 
+use std::collections::BTreeSet;
+
 #[derive(Debug, Eq, PartialEq, Copy, Clone)]
 pub enum ContType {
     Block,
@@ -154,7 +156,7 @@ impl<T: State> Analysis<T> {
                     target_cont.inflows.push(jumps.len());
                     jumps.push(Jump {
                         pc,
-                        target: target_cont.pc,
+                        target: target_cont_idx,
                         is_conditional: matches!(op, BrIf { .. }),
                         state: None,
                     });
@@ -284,18 +286,18 @@ pub struct RefCounts {
 
 #[derive(Default, Debug, Clone)]
 pub struct AbstractSlot {
-    reference: Option<usize>,
+    references: BTreeSet<usize>,
 }
 
 impl AbstractSlot {
     fn new_ref(obj: usize) -> Self {
         AbstractSlot {
-            reference: Some(obj),
+            references: std::iter::once(obj).collect(),
         }
     }
 
     fn empty() -> Self {
-        AbstractSlot { reference: None }
+        AbstractSlot { references: BTreeSet::new() }
     }
 }
 
@@ -311,6 +313,7 @@ trait MergeVal: Sized {
     }
 }
 
+// Chooses the Some, or sets None if both exist
 impl<T: PartialEq + Clone> MergeVal for Option<T> {
     fn merge(&self, rhs: &Self) -> Self {
         // TODO: incorrect when both are Some
@@ -321,10 +324,16 @@ impl<T: PartialEq + Clone> MergeVal for Option<T> {
     }
 }
 
+impl<T: PartialEq + Clone + std::cmp::Ord> MergeVal for BTreeSet<T> {
+    fn merge(&self, rhs: &Self) -> Self {
+        self.union(rhs).cloned().collect()
+    }
+}
+
 impl MergeVal for AbstractSlot {
     fn merge(&self, rhs: &Self) -> Self {
         AbstractSlot {
-            reference: self.reference.merge(&rhs.reference),
+            references: self.references.merge(&rhs.references),
         }
     }
 }
@@ -349,6 +358,9 @@ impl State for AnalysisData {
         MergeVal::merge_into_slice(&mut self.abstract_stack, &other.abstract_stack);
         MergeVal::merge_into_slice(&mut self.abstract_locals, &other.abstract_locals);
         MergeVal::merge_into_slice(&mut self.abstract_globals, &other.abstract_globals);
+        for (left, right) in self.ref_counts.objects.iter_mut().zip(other.ref_counts.objects.iter()) {
+            left.refcount = left.refcount.max(right.refcount);
+        }
     }
 
     // TODO: pass in Analysis, cont idx
@@ -377,7 +389,8 @@ impl State for AnalysisData {
                 self.update_rc(&entry, |rc| *rc -= 1);
             }
             StructNew { .. } | StructNewDefault { .. } => {
-                dbg!();
+                // TODO: allocs that don't exist in every branch may have overlapping IDs
+                // we should use a slotmap
                 let obj_idx = self.ref_counts.objects.len();
                 self.ref_counts.objects.push(Object { refcount: 1 });
                 self.abstract_stack.push(AbstractSlot::new_ref(obj_idx));
@@ -408,13 +421,13 @@ impl State for AnalysisData {
                     std::mem::replace(&mut self.abstract_globals[global_index as usize], entry);
                 self.update_rc(&old_entry, |rc| *rc -= 1);
             }
-            Return | End => {
-                // TODO: ensure that End is actually the same as return
+            Return => {
                 for i in 0..self.abstract_locals.len() {
                     let entry = std::mem::take(&mut self.abstract_locals[i]);
                     self.update_rc(&entry, |rc| *rc -= 1);
                 }
             }
+            End => {} // TODO: stack stuff
             _ => {}
         }
         self.instr_annotations.push(annotation);
@@ -424,9 +437,8 @@ impl State for AnalysisData {
 impl AnalysisData {
     pub fn update_rc<'a>(&'a mut self, entry: &AbstractSlot, mut f: impl FnMut(&mut usize)) {
         entry
-            .reference
-            .map(|obj| &mut self.ref_counts.objects[obj].refcount)
-            .iter_mut()
-            .for_each(|rc| f(rc))
+            .references
+            .iter()
+            .for_each(|obj| f(&mut self.ref_counts.objects[*obj].refcount))
     }
 }
