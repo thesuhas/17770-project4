@@ -5,6 +5,12 @@ use orca_wasm::ir::module::module_functions::LocalFunction;
 use orca_wasm::ir::module::LocalOrImport;
 use orca_wasm::Module;
 use wasmparser::Operator;
+use wasmparser::Operator::{
+    F32Add, F32Ceil, F32Div, F32Eq, F32Ge, F32Gt, F32Le, F32Lt, F32Mul, F32Ne, F32Nearest, F32Neg,
+    F32Sub, I32Add, I32DivS, I32DivU, I32Eq, I32Eqz, I32GeS, I32GeU, I32GtS, I32GtU, I32LeS,
+    I32LeU, I32LtS, I32LtU, I32Mul, I32Ne, I32Or, I32RemS, I32RemU, I32Rotl, I32Rotr, I32Shl,
+    I32ShrS, I32ShrU, I32Sub, I32Xor,
+};
 
 #[derive(Debug, Eq, PartialEq, Copy, Clone)]
 pub enum ContType {
@@ -316,12 +322,37 @@ impl State for AnalysisData {
             ty_id: None,
         };
         match op {
-            I32Const { .. } | F64Const { .. } | I64Const { .. } | F32Const { .. } => {
+            I32Const { .. }
+            | F64Const { .. }
+            | I64Const { .. }
+            | F32Const { .. }
+            | MemorySize { .. } => {
                 // TODO: all ops that incr stack length
                 self.abstract_stack.push(AbstractSlot::empty());
             }
+            // Instructions that decr stack length by 2
+            I32Store { .. }
+            | I32Store8 { .. }
+            | I32Store16 { .. }
+            | I64Store { .. }
+            | I64Store16 { .. }
+            | I64Store32 { .. }
+            | F32Store { .. }
+            | F64Store { .. } => {
+                let entry = self.abstract_stack.pop().unwrap();
+                self.update_rc(&entry, |rc| *rc -= 1);
+                let entry = self.abstract_stack.pop().unwrap();
+                self.update_rc(&entry, |rc| *rc -= 1);
+            }
+
             I32Add | I32Sub | I32Mul | I32DivS | I32DivU | I32RemS | I32RemU | I32Or | I32Xor
-            | I32Shl | I32ShrS | I32ShrU | I32Rotl | I32Rotr | Drop => {
+            | I32Shl | I32ShrS | I32ShrU | I32Rotl | I32Rotr | I32Eq | I32Eqz | I32Ne | I32LtS
+            | I32LtU | I32GtS | I32GtU | I32LeS | I32LeU | I32GeS | I32GeU | I64Add | I64Sub
+            | I64Mul | I64DivS | I64DivU | I64RemS | I64RemU | I64Or | I64Xor | I64Shl
+            | I64ShrS | I64ShrU | I64Rotl | I64Rotr | I64Eq | I64Eqz | I64Ne | I64LtS | I64LtU
+            | I64GtS | I64GtU | I64LeS | I64LeU | I64GeS | I64GeU | F32Add | F32Sub | F32Mul
+            | F32Div | F32Eq | F32Ne | F32Le | F32Lt | F32Ge | F32Gt | F64Add | F64Sub | F64Mul
+            | F64Div | F64Eq | F64Ne | F64Le | F64Lt | F64Ge | F64Gt | Drop => {
                 // TODO: all ops that decr stack length
                 let entry = self.abstract_stack.pop().unwrap();
                 self.update_rc(&entry, |rc| *rc -= 1);
