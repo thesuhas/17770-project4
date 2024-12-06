@@ -22,6 +22,9 @@
                         (local.set $local_ref_1_2) ;; now local_ref_1_2 is unknown
                     )
 
+                    (local.get $local_ref_1_2)
+                    (struct.get $s1 0)
+
                     (local.set $local_ref_4 (struct.new $s3))
                     (local.set $local_ref_5 (struct.new $s3))
                     (local.get $local_ref_4)

@@ -268,8 +268,9 @@ impl<T: State + std::fmt::Debug> Analysis<T> {
 
 #[derive(Debug, Clone, Default)]
 pub struct Annotation {
-    pub alloc_id: Option<usize>,
+    pub new_alloc_id: Option<usize>,
     pub ty_id: Option<usize>,
+    pub possibly_accessed_allocs: BTreeSet<usize>,
 }
 
 #[derive(Default, Debug, Clone)]
@@ -393,8 +394,9 @@ impl State for AnalysisData {
         use Operator::*;
 
         let mut annotation = Annotation {
-            alloc_id: None,
+            new_alloc_id: None,
             ty_id: None,
+            possibly_accessed_allocs: BTreeSet::new(),
         };
         match op {
             I32Const { .. }
@@ -433,14 +435,13 @@ impl State for AnalysisData {
                 self.update_rc(&entry, |rc| *rc -= 1);
             }
             StructNew { struct_type_index } | StructNewDefault { struct_type_index } => {
-                dbg!();
                 let obj_idx = self.ref_counts.objects.len();
                 self.ref_counts.objects.push(Object {
                     refcount: 1,
                     ty_id: struct_type_index as usize,
                 });
                 self.abstract_stack.push(AbstractSlot::new_ref(obj_idx));
-                annotation.alloc_id = Some(obj_idx);
+                annotation.new_alloc_id = Some(obj_idx);
                 annotation.ty_id = Some(struct_type_index as usize);
             }
             StructGet {
@@ -459,6 +460,8 @@ impl State for AnalysisData {
                 let entry = self.abstract_stack.pop().unwrap();
                 self.update_rc(&entry, |rc| *rc -= 1);
                 annotation.ty_id = Some(struct_type_index as usize);
+                let possible_refs = &entry.references;
+                annotation.possibly_accessed_allocs = possible_refs.clone();
             }
             LocalGet { local_index } => {
                 let entry = self.abstract_locals[local_index as usize].clone();

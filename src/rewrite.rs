@@ -27,7 +27,7 @@ impl<'a> Rewriter<'a, AnalysisData> {
             .iter()
             .map(|cont| cont.entry_state.clone().unwrap())
             .flat_map(|data| data.instr_annotations)
-            .filter_map(|annotation| annotation.alloc_id)
+            .filter_map(|annotation| annotation.new_alloc_id)
             .count();
 
         let mut escaped_types = HashSet::new();
@@ -89,7 +89,7 @@ impl<'a> Rewriter<'a, AnalysisData> {
                                         }
                                     }
                                 }
-                                let alloc_id = annotation.alloc_id.unwrap();
+                                let alloc_id = annotation.new_alloc_id.unwrap();
 
                                 let num_fields = fields.len() as u32;
                                 let local_offset = modifier.body.num_locals;
