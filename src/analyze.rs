@@ -5,6 +5,12 @@ use orca_wasm::ir::module::module_functions::LocalFunction;
 use orca_wasm::ir::module::LocalOrImport;
 use orca_wasm::Module;
 use wasmparser::Operator;
+use wasmparser::Operator::{
+    F32Add, F32Div, F32Eq, F32Ge, F32Gt, F32Le, F32Lt, F32Mul, F32Ne,
+    F32Sub, I32Add, I32DivS, I32DivU, I32Eq, I32Eqz, I32GeS, I32GeU, I32GtS, I32GtU, I32LeS,
+    I32LeU, I32LtS, I32LtU, I32Mul, I32Ne, I32Or, I32RemS, I32RemU, I32Rotl, I32Rotr, I32Shl,
+    I32ShrS, I32ShrU, I32Sub, I32Xor,
+};
 
 use std::collections::BTreeSet;
 
@@ -263,6 +269,7 @@ impl<T: State + std::fmt::Debug> Analysis<T> {
 #[derive(Debug, Clone, Default)]
 pub struct Annotation {
     pub alloc_id: Option<usize>,
+    pub ty_id: Option<usize>,
 }
 
 #[derive(Default, Debug, Clone)]
@@ -277,6 +284,7 @@ pub struct AnalysisData {
 #[derive(Debug, Clone)]
 pub struct Object {
     pub refcount: usize,
+    pub ty_id: usize,
 }
 
 #[derive(Default, Debug, Clone)]
@@ -297,7 +305,9 @@ impl AbstractSlot {
     }
 
     fn empty() -> Self {
-        AbstractSlot { references: BTreeSet::new() }
+        AbstractSlot {
+            references: BTreeSet::new(),
+        }
     }
 }
 
@@ -358,7 +368,12 @@ impl State for AnalysisData {
         MergeVal::merge_into_slice(&mut self.abstract_stack, &other.abstract_stack);
         MergeVal::merge_into_slice(&mut self.abstract_locals, &other.abstract_locals);
         MergeVal::merge_into_slice(&mut self.abstract_globals, &other.abstract_globals);
-        for (left, right) in self.ref_counts.objects.iter_mut().zip(other.ref_counts.objects.iter()) {
+        for (left, right) in self
+            .ref_counts
+            .objects
+            .iter_mut()
+            .zip(other.ref_counts.objects.iter())
+        {
             left.refcount = left.refcount.max(right.refcount);
         }
     }
@@ -377,24 +392,73 @@ impl State for AnalysisData {
     fn exec_op<'a>(&mut self, op: Operator<'a>) {
         use Operator::*;
 
-        let mut annotation = Annotation { alloc_id: None };
+        let mut annotation = Annotation {
+            alloc_id: None,
+            ty_id: None,
+        };
         match op {
-            I32Const { .. } => {
+            I32Const { .. }
+            | F64Const { .. }
+            | I64Const { .. }
+            | F32Const { .. }
+            | MemorySize { .. } => {
                 // TODO: all ops that incr stack length
                 self.abstract_stack.push(AbstractSlot::empty());
             }
-            I32Add | Drop => {
+            // Instructions that decr stack length by 2
+            I32Store { .. }
+            | I32Store8 { .. }
+            | I32Store16 { .. }
+            | I64Store { .. }
+            | I64Store16 { .. }
+            | I64Store32 { .. }
+            | F32Store { .. }
+            | F64Store { .. } => {
+                let entry = self.abstract_stack.pop().unwrap();
+                self.update_rc(&entry, |rc| *rc -= 1);
+                let entry = self.abstract_stack.pop().unwrap();
+                self.update_rc(&entry, |rc| *rc -= 1);
+            }
+
+            I32Add | I32Sub | I32Mul | I32DivS | I32DivU | I32RemS | I32RemU | I32Or | I32Xor
+            | I32Shl | I32ShrS | I32ShrU | I32Rotl | I32Rotr | I32Eq | I32Eqz | I32Ne | I32LtS
+            | I32LtU | I32GtS | I32GtU | I32LeS | I32LeU | I32GeS | I32GeU | I64Add | I64Sub
+            | I64Mul | I64DivS | I64DivU | I64RemS | I64RemU | I64Or | I64Xor | I64Shl
+            | I64ShrS | I64ShrU | I64Rotl | I64Rotr | I64Eq | I64Eqz | I64Ne | I64LtS | I64LtU
+            | I64GtS | I64GtU | I64LeS | I64LeU | I64GeS | I64GeU | F32Add | F32Sub | F32Mul
+            | F32Div | F32Eq | F32Ne | F32Le | F32Lt | F32Ge | F32Gt | F64Add | F64Sub | F64Mul
+            | F64Div | F64Eq | F64Ne | F64Le | F64Lt | F64Ge | F64Gt | Drop => {
                 // TODO: all ops that decr stack length
                 let entry = self.abstract_stack.pop().unwrap();
                 self.update_rc(&entry, |rc| *rc -= 1);
             }
-            StructNew { .. } | StructNewDefault { .. } => {
-                // TODO: allocs that don't exist in every branch may have overlapping IDs
-                // we should use a slotmap
+            StructNew { struct_type_index } | StructNewDefault { struct_type_index } => {
+                dbg!();
                 let obj_idx = self.ref_counts.objects.len();
-                self.ref_counts.objects.push(Object { refcount: 1 });
+                self.ref_counts.objects.push(Object {
+                    refcount: 1,
+                    ty_id: struct_type_index as usize,
+                });
                 self.abstract_stack.push(AbstractSlot::new_ref(obj_idx));
                 annotation.alloc_id = Some(obj_idx);
+                annotation.ty_id = Some(struct_type_index as usize);
+            }
+            StructGet {
+                struct_type_index, ..
+            }
+            | StructGetS {
+                struct_type_index, ..
+            }
+            | StructGetU {
+                struct_type_index, ..
+            }
+            | StructSet {
+                struct_type_index, ..
+            } => {
+                // Pop the reference from the abstract stack and decrement the ref count
+                let entry = self.abstract_stack.pop().unwrap();
+                self.update_rc(&entry, |rc| *rc -= 1);
+                annotation.ty_id = Some(struct_type_index as usize);
             }
             LocalGet { local_index } => {
                 let entry = self.abstract_locals[local_index as usize].clone();
@@ -435,7 +499,7 @@ impl State for AnalysisData {
 }
 
 impl AnalysisData {
-    pub fn update_rc<'a>(&'a mut self, entry: &AbstractSlot, mut f: impl FnMut(&mut usize)) {
+    pub fn update_rc(&mut self, entry: &AbstractSlot, mut f: impl FnMut(&mut usize)) {
         entry
             .references
             .iter()
