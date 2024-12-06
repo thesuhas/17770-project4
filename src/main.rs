@@ -53,3 +53,13 @@ fn test_global_escape() {
     analyzer.analyses[0].run(&analyzer.module);
     dbg!(&analyzer.analyses[0].continuations);
 }
+
+#[test]
+fn test_simple_alias() {
+    let path = "test/simple_alias.wat".to_string();
+    let wasm = wat::parse_file(path).expect("unable to convert");
+    let module = Module::parse(&wasm, false).expect("Error parsing");
+    let mut analyzer: TotalAnalyzer<AnalysisData> = analyze::TotalAnalyzer::init_analysis(module);
+    analyzer.analyses[0].run(&analyzer.module);
+    dbg!(&analyzer.analyses[0].continuations);
+}
