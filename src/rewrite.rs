@@ -30,8 +30,8 @@ impl<'a> Rewriter<'a, AnalysisData> {
             .filter_map(|annotation| annotation.new_alloc_id)
             .count();
 
+        // TODO: use get_escaped_allocs()
         let mut escaped_types = HashSet::new();
-
         for cont in analysis.continuations.iter() {
             let analysis = cont.entry_state.as_ref().unwrap();
             for obj in analysis.ref_counts.objects.iter() {

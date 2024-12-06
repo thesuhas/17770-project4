@@ -105,6 +105,7 @@ impl<T: State> Analysis<T> {
         let mut pc_conts = vec![None; func.body.num_instructions];
         let mut pc_jumps = vec![None; func.body.num_instructions];
         let mut conts = vec![Continuation {
+            // the return continuation
             pc: func.body.num_instructions,
             fallthru_pc: None,
             inflows: vec![],
@@ -176,7 +177,7 @@ impl<T: State> Analysis<T> {
                         conts[current_cont].fallthru_pc = Some(pc);
                         current_cont = ended_ctl_idx;
                         conts[ended_ctl_idx].pc = pc;
-                    } else if ended_cont_ty == ContType::Block {
+                    } else if ended_cont_ty == ContType::Loop {
                         let loop_end_cont_idx = ctl_stack.pop().unwrap();
                         assert_eq!(conts[loop_end_cont_idx].ty, ContType::Block);
                         assert_eq!(loop_end_cont_idx, ended_ctl_idx - 1);
@@ -188,6 +189,7 @@ impl<T: State> Analysis<T> {
                         current_cont = loop_end_cont_idx;
                     }
                 }
+                // TODO: add jump from return to ret cont
                 _ => {}
             }
         }
@@ -218,6 +220,8 @@ impl<T: State + std::fmt::Debug> Analysis<T> {
         cont_idxs[1..].sort_by_key(|i| self.continuations[*i].pc);
         let last_cont_idx = *cont_idxs.last().unwrap();
 
+        let return_cont_state_ptr: *mut Option<_> = &mut self.continuations[0].entry_state;
+
         for ci in cont_idxs {
             let cont = &mut self.continuations[ci];
             let start_pc = if cont.ty == ContType::Func {
@@ -232,7 +236,7 @@ impl<T: State + std::fmt::Debug> Analysis<T> {
                 debug_assert!(
                     cont.entry_state.is_some(),
                     "reached cont before entry state was set"
-                );
+                    );
                 cont.merge_states(&self.jumps);
                 cont.entry_state.as_mut().unwrap()
             };
@@ -261,8 +265,13 @@ impl<T: State + std::fmt::Debug> Analysis<T> {
                 self.continuations[next_cont_idx].entry_state = Some(state.clone_for_next_cont());
             } else {
                 assert!(ci == last_cont_idx);
+                unsafe {
+                    if let Some(ret_state) = (*return_cont_state_ptr).as_mut() {
+                        ret_state.merge(&state);
+                    }
+                }
             }
-        }
+        };
     }
 }
 
@@ -501,6 +510,58 @@ impl State for AnalysisData {
     }
 }
 
+#[derive(PartialEq, Eq)]
+pub enum Maybe {
+    Yes,
+    No,
+    Unknown,
+}
+
+impl Maybe {
+    pub fn maybe_yes(&self) -> bool {
+        *self == Maybe::Yes || *self == Maybe::Unknown
+    }
+
+    pub fn maybe_no(&self) -> bool {
+        *self == Maybe::No || *self == Maybe::Unknown
+    }
+
+    pub fn always_yes(&self) -> bool {
+        *self == Maybe::Yes
+    }
+
+    pub fn always_no(&self) -> bool {
+        *self == Maybe::No
+    }
+}
+
+pub struct StructAccessInfo {
+    pub escaped: Maybe,
+    pub aliased: bool,
+}
+
+impl StructAccessInfo {
+    pub fn unaliased_unescaped(&self) -> bool {
+        self.escaped.always_no() && !self.aliased
+    }
+
+    pub fn aliased_unescaped(&self) -> bool {
+        self.escaped.always_no() && self.aliased
+    }
+
+    pub fn aliased_escaped(&self) -> bool {
+        self.escaped.always_yes() && self.aliased
+    }
+
+    pub fn cross_aliased(&self) -> bool {
+        self.escaped.maybe_yes() && self.aliased
+    }
+
+    pub fn always_unescaped(&self) -> bool {
+        self.escaped.always_no()
+    }
+}
+
 impl AnalysisData {
     pub fn update_rc(&mut self, entry: &AbstractSlot, mut f: impl FnMut(&mut usize)) {
         entry
@@ -508,4 +569,11 @@ impl AnalysisData {
             .iter()
             .for_each(|obj| f(&mut self.ref_counts.objects[*obj].refcount))
     }
+
+    // TODO
+    // pub fn get_escaped_allocs(&self) -> BTreeSet<usize> {
+    // }
+
+    // pub fn collect_struct_access_info(&self) -> Vec<StructAccessInfo> {
+    // }
 }
