@@ -43,6 +43,8 @@ impl<'a> Rewriter<'a, AnalysisData> {
             }
         }
 
+        dbg!(analysis.collect_struct_access_info());
+
         Self {
             analysis,
             struct_allocs: vec![

@@ -510,7 +510,7 @@ impl State for AnalysisData {
     }
 }
 
-#[derive(PartialEq, Eq)]
+#[derive(PartialEq, Eq, Debug)]
 pub enum Maybe {
     Yes,
     No,
@@ -535,6 +535,7 @@ impl Maybe {
     }
 }
 
+#[derive(Debug)]
 pub struct StructAccessInfo {
     pub escaped: Maybe,
     pub aliased: bool,
@@ -569,11 +570,30 @@ impl AnalysisData {
             .iter()
             .for_each(|obj| f(&mut self.ref_counts.objects[*obj].refcount))
     }
+}
 
-    // TODO
-    // pub fn get_escaped_allocs(&self) -> BTreeSet<usize> {
-    // }
+impl Analysis<AnalysisData> {
+    pub fn get_escaped_allocs(&self) -> BTreeSet<usize> {
+        let ret_cont = &self.continuations[0];
+        let ret_state = ret_cont.entry_state.as_ref().unwrap();
+        ret_state.ref_counts.objects
+            .iter().enumerate()
+            .filter_map(|(i, obj)| (obj.refcount > 0).then_some(i))
+            .collect()
+    }
 
-    // pub fn collect_struct_access_info(&self) -> Vec<StructAccessInfo> {
-    // }
+    pub fn collect_struct_access_info(&self) -> Vec<StructAccessInfo> {
+        let escaped_allocs = self.get_escaped_allocs();
+        self.continuations.iter().flat_map(|c| c.entry_state.as_ref().unwrap().instr_annotations.iter()).filter_map(|annotation| {
+            match annotation.possibly_accessed_allocs.len() {
+                0 => None,
+                n => {
+                    let aliased = n > 1;
+                    let n_escaped = annotation.possibly_accessed_allocs.iter().filter(|o| escaped_allocs.contains(o)).count();
+                    let escaped = if n_escaped == n { Maybe::Yes } else if n_escaped == 0 { Maybe::No } else { Maybe::Unknown };
+                    Some(StructAccessInfo { escaped, aliased })
+                }
+            }
+        }).collect()
+    }
 }
