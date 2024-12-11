@@ -6,13 +6,13 @@ use orca_wasm::ir::module::LocalOrImport;
 use orca_wasm::Module;
 use wasmparser::Operator;
 use wasmparser::Operator::{
-    F32Add, F32Div, F32Eq, F32Ge, F32Gt, F32Le, F32Lt, F32Mul, F32Ne,
-    F32Sub, I32Add, I32DivS, I32DivU, I32Eq, I32Eqz, I32GeS, I32GeU, I32GtS, I32GtU, I32LeS,
-    I32LeU, I32LtS, I32LtU, I32Mul, I32Ne, I32Or, I32RemS, I32RemU, I32Rotl, I32Rotr, I32Shl,
-    I32ShrS, I32ShrU, I32Sub, I32Xor,
+    F32Add, F32Div, F32Eq, F32Ge, F32Gt, F32Le, F32Lt, F32Mul, F32Ne, F32Sub, I32Add, I32DivS,
+    I32DivU, I32Eq, I32Eqz, I32GeS, I32GeU, I32GtS, I32GtU, I32LeS, I32LeU, I32LtS, I32LtU, I32Mul,
+    I32Ne, I32Or, I32RemS, I32RemU, I32Rotl, I32Rotr, I32Shl, I32ShrS, I32ShrU, I32Sub, I32Xor,
 };
 
-use std::collections::BTreeSet;
+use std::collections::{BTreeSet};
+use std::fmt::Formatter;
 
 #[derive(Debug, Eq, PartialEq, Copy, Clone)]
 pub enum ContType {
@@ -82,6 +82,44 @@ pub struct Analysis<T: State> {
 }
 
 #[derive(Debug)]
+pub struct Stats {
+    pub unescaped_aliased: u32,
+    pub cross_aliased: u32,
+    pub unescaped_unaliased: u32,
+    pub always_unescaped: u32,
+    pub escaped_allocs: u32,
+}
+
+impl Stats {
+    pub fn new() -> Self {
+        Stats {
+            unescaped_aliased: 0,
+            cross_aliased: 0,
+            unescaped_unaliased: 0,
+            always_unescaped: 0,
+            escaped_allocs: 0,
+        }
+    }
+
+    pub fn calculate_percentage(&mut self, total_occurences: u32) {
+        self.unescaped_aliased =
+            ((self.unescaped_aliased as f64 / total_occurences as f64) * 100f64) as u32;
+        self.cross_aliased =
+            ((self.cross_aliased as f64 / total_occurences as f64) * 100f64) as u32;
+        self.unescaped_unaliased =
+            ((self.unescaped_unaliased as f64 / total_occurences as f64) * 100f64) as u32;
+        self.always_unescaped =
+            ((self.always_unescaped as f64 / total_occurences as f64) * 100f64) as u32;
+    }
+}
+
+impl std::fmt::Display for Stats {
+    fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
+        write!(f, "Percentage of Alias Unescaped accesses: {}%\nPercentage of accesses Aliases across Escaped and Unescaped Refs: {}%\nPercentage of accesses that are unambiguous and unescaped: {}%\nPercentage of accesses that are always unescaped: {}%\nPercentage of allocations that escape: {}\n", self.unescaped_aliased, self.cross_aliased, self.unescaped_unaliased, self.always_unescaped, self.escaped_allocs)
+    }
+}
+
+#[derive(Debug)]
 pub struct TotalAnalyzer<'a, T: State> {
     pub module: Module<'a>,
     pub analyses: Vec<Analysis<T>>,
@@ -97,6 +135,48 @@ impl<'a, T: State> TotalAnalyzer<'a, T> {
             }
         }
         TotalAnalyzer { module, analyses }
+    }
+}
+
+impl<'a> TotalAnalyzer<'a, AnalysisData> {
+    pub fn get_stats(&self) {
+        // Function Level Stats
+        let mut mod_stats = Stats::new();
+        let mut mod_occurences: u32 = 0;
+        println!("===== Function Level Stats =====");
+        for (idx, analysis) in self.analyses.iter().enumerate() {
+            let mut stats = Stats::new();
+            let struct_access = analysis.collect_struct_access_info();
+            for access in struct_access.iter() {
+                if access.aliased_unescaped() {
+                    stats.unescaped_aliased += 1;
+                    mod_stats.unescaped_aliased += 1;
+                }
+                if access.cross_aliased() {
+                    stats.cross_aliased += 1;
+                    mod_stats.cross_aliased += 1;
+                }
+                if access.unaliased_unescaped() {
+                    stats.unescaped_unaliased += 1;
+                    mod_stats.unescaped_unaliased += 1;
+                }
+                if access.always_unescaped() {
+                    stats.always_unescaped += 1;
+                    mod_stats.always_unescaped += 1;
+                }
+            }
+            // Calculate percentage and put back into stats
+            stats.calculate_percentage(struct_access.len() as u32);
+            stats.escaped_allocs = analysis.get_escaped_allocs_percentage();
+            // Print it out
+            println!("Function {}:", idx);
+            println!("{}", stats);
+            // Module level updates
+            mod_occurences += struct_access.len() as u32;
+        }
+        println!("===== Module Level Stats ======");
+        mod_stats.calculate_percentage(mod_occurences);
+        println!("{}", mod_stats);
     }
 }
 
@@ -236,7 +316,7 @@ impl<T: State + std::fmt::Debug> Analysis<T> {
                 debug_assert!(
                     cont.entry_state.is_some(),
                     "reached cont before entry state was set"
-                    );
+                );
                 cont.merge_states(&self.jumps);
                 cont.entry_state.as_mut().unwrap()
             };
@@ -271,7 +351,7 @@ impl<T: State + std::fmt::Debug> Analysis<T> {
                     }
                 }
             }
-        };
+        }
     }
 }
 
@@ -542,20 +622,20 @@ pub struct StructAccessInfo {
 }
 
 impl StructAccessInfo {
-    pub fn unaliased_unescaped(&self) -> bool {
-        self.escaped.always_no() && !self.aliased
-    }
-
     pub fn aliased_unescaped(&self) -> bool {
         self.escaped.always_no() && self.aliased
     }
 
-    pub fn aliased_escaped(&self) -> bool {
-        self.escaped.always_yes() && self.aliased
-    }
-
     pub fn cross_aliased(&self) -> bool {
         self.escaped.maybe_yes() && self.aliased
+    }
+
+    pub fn unaliased_unescaped(&self) -> bool {
+        self.escaped.always_no() && !self.aliased
+    }
+
+    pub fn aliased_escaped(&self) -> bool {
+        self.escaped.always_yes() && self.aliased
     }
 
     pub fn always_unescaped(&self) -> bool {
@@ -576,24 +656,63 @@ impl Analysis<AnalysisData> {
     pub fn get_escaped_allocs(&self) -> BTreeSet<usize> {
         let ret_cont = &self.continuations[0];
         let ret_state = ret_cont.entry_state.as_ref().unwrap();
-        ret_state.ref_counts.objects
-            .iter().enumerate()
+        ret_state
+            .ref_counts
+            .objects
+            .iter()
+            .enumerate()
             .filter_map(|(i, obj)| (obj.refcount > 0).then_some(i))
             .collect()
     }
 
+    pub fn get_escaped_allocs_percentage(&self) -> u32 {
+        let ret_cont = &self.continuations[0];
+        let ret_state = ret_cont.entry_state.as_ref().unwrap();
+
+        // Count the objects where refcount > 0
+        let count_ref_gt_zero = ret_state
+            .ref_counts
+            .objects
+            .iter()
+            .filter(|obj| obj.refcount > 0)
+            .count();
+
+        // Calculate the percentage
+        let total_objects = ret_state.ref_counts.objects.len();
+
+        if total_objects == 0 {
+            0 // Avoid division by zero if there are no objects
+        } else {
+            ((count_ref_gt_zero as f64 / total_objects as f64) * 100.0) as u32
+        }
+    }
+
     pub fn collect_struct_access_info(&self) -> Vec<StructAccessInfo> {
         let escaped_allocs = self.get_escaped_allocs();
-        self.continuations.iter().flat_map(|c| c.entry_state.as_ref().unwrap().instr_annotations.iter()).filter_map(|annotation| {
-            match annotation.possibly_accessed_allocs.len() {
-                0 => None,
-                n => {
-                    let aliased = n > 1;
-                    let n_escaped = annotation.possibly_accessed_allocs.iter().filter(|o| escaped_allocs.contains(o)).count();
-                    let escaped = if n_escaped == n { Maybe::Yes } else if n_escaped == 0 { Maybe::No } else { Maybe::Unknown };
-                    Some(StructAccessInfo { escaped, aliased })
-                }
-            }
-        }).collect()
+        self.continuations
+            .iter()
+            .flat_map(|c| c.entry_state.as_ref().unwrap().instr_annotations.iter())
+            .filter_map(
+                |annotation| match annotation.possibly_accessed_allocs.len() {
+                    0 => None,
+                    n => {
+                        let aliased = n > 1;
+                        let n_escaped = annotation
+                            .possibly_accessed_allocs
+                            .iter()
+                            .filter(|o| escaped_allocs.contains(o))
+                            .count();
+                        let escaped = if n_escaped == n {
+                            Maybe::Yes
+                        } else if n_escaped == 0 {
+                            Maybe::No
+                        } else {
+                            Maybe::Unknown
+                        };
+                        Some(StructAccessInfo { escaped, aliased })
+                    }
+                },
+            )
+            .collect()
     }
 }
