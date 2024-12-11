@@ -5,11 +5,6 @@ use orca_wasm::ir::module::module_functions::LocalFunction;
 use orca_wasm::ir::module::LocalOrImport;
 use orca_wasm::Module;
 use wasmparser::Operator;
-use wasmparser::Operator::{
-    F32Add, F32Div, F32Eq, F32Ge, F32Gt, F32Le, F32Lt, F32Mul, F32Ne, F32Sub, I32Add, I32DivS,
-    I32DivU, I32Eq, I32Eqz, I32GeS, I32GeU, I32GtS, I32GtU, I32LeS, I32LeU, I32LtS, I32LtU, I32Mul,
-    I32Ne, I32Or, I32RemS, I32RemU, I32Rotl, I32Rotr, I32Shl, I32ShrS, I32ShrU, I32Sub, I32Xor,
-};
 
 use std::collections::{BTreeSet};
 use std::fmt::Formatter;
@@ -198,6 +193,8 @@ impl<T: State> Analysis<T> {
         let mut ctl_stack = vec![0];
         let mut current_cont = 0;
 
+        let mut else_stack = vec![];
+
         for (pc, instr) in func.body.instructions.iter().enumerate() {
             use Operator::*;
 
@@ -250,24 +247,87 @@ impl<T: State> Analysis<T> {
                 }
                 End => {
                     let ended_ctl_idx = ctl_stack.pop().unwrap();
-                    let ended_cont_ty = conts[ended_ctl_idx].ty;
+                    let ended_cont_ty = &mut conts[ended_ctl_idx].ty;
 
-                    if ended_cont_ty == ContType::Block {
-                        pc_conts[pc] = Some(ended_ctl_idx);
-                        conts[current_cont].fallthru_pc = Some(pc);
-                        current_cont = ended_ctl_idx;
-                        conts[ended_ctl_idx].pc = pc;
-                    } else if ended_cont_ty == ContType::Loop {
-                        let loop_end_cont_idx = ctl_stack.pop().unwrap();
-                        assert_eq!(conts[loop_end_cont_idx].ty, ContType::Block);
-                        assert_eq!(loop_end_cont_idx, ended_ctl_idx - 1);
+                    match ended_cont_ty {
+                        ContType::Block => {
+                            pc_conts[pc] = Some(ended_ctl_idx);
+                            conts[current_cont].fallthru_pc = Some(pc);
+                            current_cont = ended_ctl_idx;
+                            conts[ended_ctl_idx].pc = pc;
 
-                        conts[ended_ctl_idx].fallthru_pc = Some(pc);
+                            if else_stack.last().is_some_and(|i| *i == ended_ctl_idx) {
+                                let ifend_cont_idx = else_stack.pop().unwrap() - 1;
+                                let ifend_cont: &mut Continuation<T> = &mut conts[ifend_cont_idx];
+                                ifend_cont.pc = pc;
+                            }
+                        }
+                        ContType::Loop => {
+                            let loop_end_cont_idx = ctl_stack.pop().unwrap();
+                            assert_eq!(conts[loop_end_cont_idx].ty, ContType::Block);
+                            assert_eq!(loop_end_cont_idx, ended_ctl_idx - 1);
 
-                        pc_conts[pc] = Some(loop_end_cont_idx);
-                        conts[loop_end_cont_idx].pc = pc;
-                        current_cont = loop_end_cont_idx;
+                            conts[ended_ctl_idx].fallthru_pc = Some(pc);
+
+                            pc_conts[pc] = Some(loop_end_cont_idx);
+                            conts[loop_end_cont_idx].pc = pc;
+                            current_cont = loop_end_cont_idx;
+                        }
+                        ContType::Func => {},
                     }
+                }
+                If { .. } => {
+                    // the continuation denoting the end of the whole if/else
+                    let ifend_cont_idx = conts.len();
+                    ctl_stack.push(ifend_cont_idx);
+                    conts.push(Continuation {
+                        pc: 0,
+                        fallthru_pc: None,
+                        inflows: vec![],
+                        ty: ContType::Block,
+                        entry_state: None,
+                    });
+
+                    // also push the else cont, which doesnt end up on the ctl stack unless there
+                    // is an else
+                    let else_cont_idx = conts.len();
+                    conts.push(Continuation {
+                        pc: 0,
+                        fallthru_pc: Some(0),
+                        inflows: vec![],
+                        ty: ContType::Block,
+                        entry_state: None,
+                    });
+
+                    pc_jumps[pc] = Some(jumps.len());
+                    jumps.push(Jump {
+                        pc,
+                        target: else_cont_idx,
+                        is_conditional: true,
+                        state: None,
+                    });
+                }
+                Else => {
+                    let ifend_cont_idx = ctl_stack.pop().unwrap();
+
+                    // pushed during If
+                    let else_cont_idx = ifend_cont_idx + 1;
+
+                    let before_if_ctl_idx = *ctl_stack.last().unwrap();
+                    let before_if_cont = &mut conts[before_if_ctl_idx];
+                    before_if_cont.fallthru_pc = Some(pc);
+
+                    ctl_stack.push(else_cont_idx);
+                    else_stack.push(else_cont_idx);
+                    pc_conts[pc] = Some(else_cont_idx);
+
+                    pc_jumps[pc] = Some(jumps.len());
+                    jumps.push(Jump {
+                        pc,
+                        target: ifend_cont_idx,
+                        is_conditional: false,
+                        state: None,
+                    });
                 }
                 // TODO: add jump from return to ret cont
                 _ => {}
@@ -460,12 +520,12 @@ impl State for AnalysisData {
         MergeVal::merge_into_slice(&mut self.abstract_globals, &other.abstract_globals);
         for (left, right) in self
             .ref_counts
-            .objects
-            .iter_mut()
-            .zip(other.ref_counts.objects.iter())
-        {
-            left.refcount = left.refcount.max(right.refcount);
-        }
+                .objects
+                .iter_mut()
+                .zip(other.ref_counts.objects.iter())
+                {
+                    left.refcount = left.refcount.max(right.refcount);
+                }
     }
 
     // TODO: pass in Analysis, cont idx
@@ -512,17 +572,17 @@ impl State for AnalysisData {
             }
 
             I32Add | I32Sub | I32Mul | I32DivS | I32DivU | I32RemS | I32RemU | I32Or | I32Xor
-            | I32Shl | I32ShrS | I32ShrU | I32Rotl | I32Rotr | I32Eq | I32Eqz | I32Ne | I32LtS
-            | I32LtU | I32GtS | I32GtU | I32LeS | I32LeU | I32GeS | I32GeU | I64Add | I64Sub
-            | I64Mul | I64DivS | I64DivU | I64RemS | I64RemU | I64Or | I64Xor | I64Shl
-            | I64ShrS | I64ShrU | I64Rotl | I64Rotr | I64Eq | I64Eqz | I64Ne | I64LtS | I64LtU
-            | I64GtS | I64GtU | I64LeS | I64LeU | I64GeS | I64GeU | F32Add | F32Sub | F32Mul
-            | F32Div | F32Eq | F32Ne | F32Le | F32Lt | F32Ge | F32Gt | F64Add | F64Sub | F64Mul
-            | F64Div | F64Eq | F64Ne | F64Le | F64Lt | F64Ge | F64Gt | Drop => {
-                // TODO: all ops that decr stack length
-                let entry = self.abstract_stack.pop().unwrap();
-                self.update_rc(&entry, |rc| *rc -= 1);
-            }
+                | I32Shl | I32ShrS | I32ShrU | I32Rotl | I32Rotr | I32Eq | I32Eqz | I32Ne | I32LtS
+                | I32LtU | I32GtS | I32GtU | I32LeS | I32LeU | I32GeS | I32GeU | I64Add | I64Sub
+                | I64Mul | I64DivS | I64DivU | I64RemS | I64RemU | I64Or | I64Xor | I64Shl
+                | I64ShrS | I64ShrU | I64Rotl | I64Rotr | I64Eq | I64Eqz | I64Ne | I64LtS | I64LtU
+                | I64GtS | I64GtU | I64LeS | I64LeU | I64GeS | I64GeU | F32Add | F32Sub | F32Mul
+                | F32Div | F32Eq | F32Ne | F32Le | F32Lt | F32Ge | F32Gt | F64Add | F64Sub | F64Mul
+                | F64Div | F64Eq | F64Ne | F64Le | F64Lt | F64Ge | F64Gt | Drop => {
+                    // TODO: all ops that decr stack length
+                    let entry = self.abstract_stack.pop().unwrap();
+                    self.update_rc(&entry, |rc| *rc -= 1);
+                }
             StructNew { struct_type_index } | StructNewDefault { struct_type_index } => {
                 let obj_idx = self.ref_counts.objects.len();
                 self.ref_counts.objects.push(Object {
@@ -641,6 +701,11 @@ impl StructAccessInfo {
     pub fn always_unescaped(&self) -> bool {
         self.escaped.always_no()
     }
+}
+
+struct StructAccessStats {
+    pub total_count: usize,
+    pub unaliased_unescaped_count: usize,
 }
 
 impl AnalysisData {
