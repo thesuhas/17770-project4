@@ -78,3 +78,17 @@ fn test_multi_fn() {
     dbg!(&analyzer.analyses[0].continuations);
     analyzer.get_stats();
 }
+
+#[test]
+fn test_benchmark() {
+    let path = "test/kotlin-wasm-benchmarks.wat".to_string();
+    let wasm = wat::parse_file(path).expect("unable to convert");
+    let module = Module::parse(&wasm, false).expect("Error parsing");
+    let mut analyzer: TotalAnalyzer<AnalysisData> = analyze::TotalAnalyzer::init_analysis(module);
+    for idx in 0..analyzer.analyses.len() {
+        analyzer.analyses[idx].run(&analyzer.module);
+    }
+    // let info = analyzer.analyses[0].collect_struct_access_info();
+    // dbg!(&analyzer.analyses[0].continuations);
+    analyzer.get_stats();
+}
