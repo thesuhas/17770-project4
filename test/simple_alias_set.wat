@@ -1,5 +1,4 @@
 (module
-                (global $global_ref (mut (ref null struct)) (ref.null struct))
                 (func $global_escape
                     (local $local_ref_1 (ref null $s1))
                     (local $local_ref_2 (ref null $s1))
@@ -33,7 +32,6 @@
                     (local.set $local_ref_5) ;; not actually aliased, just swapped
 
                     drop
-                    ;; (global.set $global_ref (local.get $local_ref_1_2))
                 )
                 (type $s1 (struct (field i32)))
                 (type $s2 (struct (field i32 i32)))

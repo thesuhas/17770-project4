@@ -3,6 +3,7 @@
 use orca_wasm::ir::id::FunctionID;
 use orca_wasm::ir::module::module_functions::LocalFunction;
 use orca_wasm::ir::module::LocalOrImport;
+use orca_wasm::ir::module::module_types::Types;
 use orca_wasm::Module;
 use wasmparser::Operator;
 
@@ -20,7 +21,7 @@ type ContIndex = usize;
 type JumpIndex = usize;
 
 pub trait State: Clone {
-    fn exec_op<'a>(&mut self, op: Operator<'a>);
+    fn exec_op<'a>(&mut self, module: &Module, op: Operator<'a>);
     fn from_func(module: &Module, local_func: &LocalFunction) -> Self;
     fn merge(&mut self, other: &Self); // TODO: idk if it should always just be two at a time
     fn clone_for_next_cont(&self) -> Self;
@@ -396,7 +397,7 @@ impl<T: State + std::fmt::Debug> Analysis<T> {
                     }
                 }
 
-                state.exec_op(current_op);
+                state.exec_op(module, current_op);
             }
 
             if let Some(end_pc) = cont.fallthru_pc {
@@ -539,7 +540,7 @@ impl State for AnalysisData {
         self.clone_for_next_cont()
     }
 
-    fn exec_op<'a>(&mut self, op: Operator<'a>) {
+    fn exec_op<'a>(&mut self, module: &Module, op: Operator<'a>) {
         use Operator::*;
 
         let mut annotation = Annotation {
@@ -589,6 +590,15 @@ impl State for AnalysisData {
                     refcount: 1,
                     ty_id: struct_type_index as usize,
                 });
+                let num_fields = {
+                    let struct_ty = &module.types.types[struct_type_index as usize];
+                    if let Types::StructType { fields, .. } = struct_ty {
+                        fields.len()
+                    } else {
+                        panic!()
+                    }
+                };
+                self.abstract_stack.truncate(self.abstract_stack.len() - num_fields);
                 self.abstract_stack.push(AbstractSlot::new_ref(obj_idx));
                 annotation.new_alloc_id = Some(obj_idx);
                 annotation.ty_id = Some(struct_type_index as usize);
@@ -611,6 +621,10 @@ impl State for AnalysisData {
                 annotation.ty_id = Some(struct_type_index as usize);
                 let possible_refs = &entry.references;
                 annotation.possibly_accessed_allocs = possible_refs.clone();
+
+                if !matches!(op, StructSet { .. }) {
+                    self.abstract_stack.push(AbstractSlot::empty());
+                }
             }
             LocalGet { local_index } => {
                 let entry = self.abstract_locals[local_index as usize].clone();
@@ -720,7 +734,14 @@ impl AnalysisData {
 impl Analysis<AnalysisData> {
     pub fn get_escaped_allocs(&self) -> BTreeSet<usize> {
         let ret_cont = &self.continuations[0];
-        let ret_state = ret_cont.entry_state.as_ref().unwrap();
+        let mut ret_state = ret_cont.entry_state.as_ref().unwrap().clone();
+
+        dbg!(&ret_state);
+        let dead_slots: Vec<AbstractSlot> =
+            ret_state.abstract_stack.iter().chain(ret_state.abstract_locals.iter()).cloned().collect();
+        for stackref in dead_slots.into_iter() {
+            ret_state.update_rc(&stackref, |rc| *rc -= 1);
+        }
         ret_state
             .ref_counts
             .objects
